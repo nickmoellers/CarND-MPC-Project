@@ -9,8 +9,16 @@
 #include "MPC.h"
 #include "json.hpp"
 
+using namespace std;
+
+#define DEBUG false
+
 // for convenience
 using json = nlohmann::json;
+
+
+// This is the length from front to CoG that has a similar radius.
+//const double Lf = 2.67;
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
@@ -85,8 +93,8 @@ int main() {
         string event = j[0].get<string>();
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          vector<double> ptsx = j[1]["ptsx"];
-          vector<double> ptsy = j[1]["ptsy"];
+          vector<double> ptsx = j[1]["ptsx"]; // 6 waypoints
+          vector<double> ptsy = j[1]["ptsy"]; // 6 waypoints
           double px = j[1]["x"];
           double py = j[1]["y"];
           double psi = j[1]["psi"];
@@ -98,18 +106,84 @@ int main() {
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+          if( DEBUG ) cout << "Converting to car coords" << endl;
+
+          for( int i = 0 ; i < ptsx.size() ; i++ ) {
+
+            //x and y coordinate both at 0.
+            double shift_x = ptsx[i]-px;
+            double shift_y = ptsy[i]-py;
+
+            double cospsi = cos(-psi);
+            double sinpsi = sin(-psi);
+
+            //rotate all points so psi is 0 as well
+            ptsx[i] = shift_x * cospsi - shift_y * sinpsi;
+            ptsy[i] = shift_x * sinpsi + shift_y * cospsi;
+          }
+
+          //Convert to vectorxd
+          double* ptrx = &ptsx[0];
+          Eigen::Map<Eigen::VectorXd> ptsx_transform(ptrx, 6);
+          double* ptry = &ptsy[0];
+          Eigen::Map<Eigen::VectorXd> ptsy_transform(ptry, 6);
+
+
+          if( DEBUG ) cout << "Calculate cte and epsi" << endl;
+          // Using a third order polynomial
+          auto coeffs = polyfit(ptsx_transform, ptsy_transform, 3);
+          // The cross track error is calculated by evaluating at polynomial at x, f(x)
+          // and subtracting y. 
+          // Since we transformed, above, x and y are 0.
+          double cte = polyeval(coeffs, 0) ;//x) - y;
+          // Due to the sign starting at 0, the orientation error is -f'(x).
+          // derivative of coeffs[0] + coeffs[1] * x -> coeffs[1]
+          // psi is 0
+          //double epsi = psi - atan(coeffs[1]);
+          double epsi = -atan(coeffs[1]);
+
+          double steer_value = j[1]["steering_angle"];
+          double throttle_value = j[1]["throttle"];
+
+          Eigen::VectorXd state(6);
+          //state <<  px_delay, py_delay, psi_delay, v_delay, cte_delay, epsi_delay;
+          double latency = .1;
+
+          double px_delay = v * latency;
+          double py_delay = 0;
+          double psi_delay = (-v/Lf) * steer_value * latency;
+          double cte_delay = cte + v * sin(epsi) * latency;
+          double epsi_delay = epsi + (v/Lf) * steer_value * latency;
+          double v_delay = v + throttle_value * latency;
+
+          state << px_delay, py_delay, psi_delay, v_delay, cte_delay, epsi_delay;
+
+          if( DEBUG ) cout << "Calling mpc.solve()" << endl;
+          auto vars = mpc.Solve(state, coeffs, steer_value, throttle_value);
+          if( DEBUG ) cout << "Finished mpc.solve()" << endl;
+
+          if( DEBUG ) cout << "Prepping msgJson" << endl;
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
           // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value;
-          msgJson["throttle"] = throttle_value;
+          
+          // TODO: These need to be modified for the delay
+          //const double Lf = 2.67;
+          msgJson["steering_angle"] = -vars[0]/(deg2rad(25));//*Lf);
+          msgJson["throttle"] = vars[1];
 
           //Display the MPC predicted trajectory 
           vector<double> mpc_x_vals;
           vector<double> mpc_y_vals;
+
+          for( int i = 2 ; i < vars.size(); i++ ) {
+            if(i%2==0) {
+              mpc_x_vals.push_back(vars[i]);
+            } else {
+              mpc_y_vals.push_back(vars[i]);
+            }
+          }
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Green line
@@ -120,6 +194,13 @@ int main() {
           //Display the waypoints/reference line
           vector<double> next_x_vals;
           vector<double> next_y_vals;
+
+          double poly_inc = 2.5;
+          int num_points = 25;
+          for( int i = 1 ; i < num_points ; i++ ) {
+            next_x_vals.push_back(poly_inc*i);
+            next_y_vals.push_back(polyeval(coeffs, poly_inc*i));
+          }
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
@@ -140,7 +221,9 @@ int main() {
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
           this_thread::sleep_for(chrono::milliseconds(100));
+          if( DEBUG ) cout << "Sending msg" << endl;
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
+          if( DEBUG ) cout << "Message sent" << endl;
         }
       } else {
         // Manual driving
@@ -155,6 +238,7 @@ int main() {
   // doesn't compile :-(
   h.onHttpRequest([](uWS::HttpResponse *res, uWS::HttpRequest req, char *data,
                      size_t, size_t) {
+
     const std::string s = "<h1>Hello world!</h1>";
     if (req.getUrl().valueLength == 1) {
       res->end(s.data(), s.length());
@@ -165,18 +249,18 @@ int main() {
   });
 
   h.onConnection([&h](uWS::WebSocket<uWS::SERVER> ws, uWS::HttpRequest req) {
-    std::cout << "Connected!!!" << std::endl;
+    std::cerr << "Connected!!!" << std::endl;
   });
 
   h.onDisconnection([&h](uWS::WebSocket<uWS::SERVER> ws, int code,
                          char *message, size_t length) {
     ws.close();
-    std::cout << "Disconnected" << std::endl;
+    std::cerr << "Disconnected" << std::endl;
   });
 
   int port = 4567;
   if (h.listen(port)) {
-    std::cout << "Listening to port " << port << std::endl;
+    std::cerr << "Listening to port " << port << std::endl;
   } else {
     std::cerr << "Failed to listen to port" << std::endl;
     return -1;

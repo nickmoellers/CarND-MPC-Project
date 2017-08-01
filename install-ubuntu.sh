@@ -1,6 +1,4 @@
-#! /bin/bash
-sudo apt-get update
-sudo apt-get install git libuv1-dev libssl-dev gcc g++ cmake make
+sudo apt-get install libuv1-dev libssl-dev
 git clone https://github.com/uWebSockets/uWebSockets 
 cd uWebSockets
 git checkout e94b6e1
@@ -9,6 +7,7 @@ cd build
 cmake ..
 make 
 sudo make install
-cd ../..
+cd ..
+cd ..
 sudo ln -s /usr/lib64/libuWS.so /usr/lib/libuWS.so
 sudo rm -r uWebSockets
