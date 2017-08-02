@@ -3,6 +3,31 @@ Self-Driving Car Engineer Nanodegree Program
 
 ---
 
+## Description
+
+### The Model
+In this project, I emplemented a Model Predictive Controller, which determines the actuation of the car by fitting a line to waypoints, and minimizing the error of the trajectory. The state vector consists of the x and y positions of the car, the heading psi, the velocity, the cross track error, cte, and the heading error, epsi. The state vector is passed to the solver, which returns a trajectory and actuations for the next state. The acutations, acceleration and throttle, are passed back to the simulator. The entire process is then repeated based on the next sensor data from the simulator. 
+
+### Timestep Length and Elapsed Duration
+The duration, T, is the product of the number of timesteps, N, and the timestep length, dt. Timestep length should be kept as small as possible. In my case, I chose a timestep length equal to the latency becuase smaller is better and anything smaller isn't a good approximation of the car. N should be larger to keep the duration high, but too large is unecessary because then you're wasting computation cycles calculating the acutation so far from the present moment that it will never matter. I tried N = 10 and dt = .1, so T = 1 second, and that worked. Making any smaller, say 5 or I also tried 1, wasn't enough detail and the car would become erratic.
+
+### MPC Preprocessing
+Waypoints are preprocessed to bring into the vehicle coordinate system. To do this, I first subtract the car's coordinates (px, py) from the waypoints coordinates (ptsx, ptsY). Then, the waypoint coordinates are rotate around the car by the car's heading (-psi).
+
+### Latency
+Latency is handled in to ways. First, I modify the state vector to predict the state 100ms in the future. This means:
+x is no longer 0, it has moved some distance based on the velocity and the latency.
+y is still 0, as psi is now 0 since we transformed to car coordinates.
+psi has shifted by some angle becuase of the previous steering angle, the velocity, and the latency.
+cte will be increased or decreased based on the epsi - sometimes this actually will reduce cte
+epsi will be shifted exaclty the same as psi for the same reasons as psi
+v will be increased or decreased based on if the accelator is pressed
+This is all done in lines 152 to 157 of main.cpp
+Additionally, the solve() funciton is modified in MPC.cpp, lines 221-224 and lines 234-237. The basic principle is - before we had constrainted these values to be no greater or less than their maximum acuation. However, due to latency, we can't change the values for the first 100ms. So, we constrain those values in the first, in my case 1, timestamp to be exactly the value from the previous actuation.
+
+
+
+
 ## Dependencies
 
 * cmake >= 3.5
